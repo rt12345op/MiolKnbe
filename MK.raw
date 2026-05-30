@@ -1,0 +1,407 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "CleanUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local originalBrightness = Lighting.Brightness
+local originalAmbient = Lighting.Ambient
+local originalColorShift_Top = Lighting.ColorShift_Top
+local originalColorShift_Bottom = Lighting.ColorShift_Bottom
+
+local MainContainer = Instance.new("TextButton")
+MainContainer.Size = UDim2.new(0, 520, 0, 60)
+MainContainer.Position = UDim2.new(0.5, -260, 0, 10)
+MainContainer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MainContainer.BackgroundTransparency = 0.3
+MainContainer.BorderSizePixel = 0
+MainContainer.AutoButtonColor = false
+MainContainer.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 8)
+MainCorner.Parent = MainContainer
+
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+local function makeDraggable(frame)
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+makeDraggable(MainContainer)
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 25, 0, 25)
+CloseButton.Position = UDim2.new(0, 5, 0, 5)
+CloseButton.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+CloseButton.BackgroundTransparency = 0.3
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 14
+CloseButton.Parent = MainContainer
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 4)
+CloseCorner.Parent = CloseButton
+
+local MinimizeButton = Instance.new("TextButton")
+MinimizeButton.Size = UDim2.new(0, 25, 0, 25)
+MinimizeButton.Position = UDim2.new(1, -30, 0, 5)
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(0, 100, 0)
+MinimizeButton.BackgroundTransparency = 0.3
+MinimizeButton.Text = "-"
+MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinimizeButton.Font = Enum.Font.GothamBold
+MinimizeButton.TextSize = 14
+MinimizeButton.Parent = MainContainer
+
+local MinimizeCorner = Instance.new("UICorner")
+MinimizeCorner.CornerRadius = UDim.new(0, 4)
+MinimizeCorner.Parent = MinimizeButton
+
+local MiniContainer = Instance.new("TextButton")
+MiniContainer.Size = UDim2.new(0, 40, 0, 40)
+MiniContainer.Position = UDim2.new(1, -50, 1, -50)
+MiniContainer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MiniContainer.BackgroundTransparency = 0.3
+MiniContainer.BorderSizePixel = 0
+MiniContainer.Text = ""
+MiniContainer.Visible = false
+MiniContainer.Active = true
+MiniContainer.Parent = ScreenGui
+
+local MiniCorner = Instance.new("UICorner")
+MiniCorner.CornerRadius = UDim.new(0, 4)
+MiniCorner.Parent = MiniContainer
+
+makeDraggable(MiniContainer)
+
+local buttons = {}
+local function createOvalButton(name, text, xPos)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.new(0, 120, 0, 40)
+    button.Position = UDim2.new(0, xPos, 0, 10)
+    button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    button.Text = text .. " [OFF]"
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = 12
+    button.AutoButtonColor = false
+    button.Parent = MainContainer
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = button
+    return button
+end
+
+buttons.playerEsp = createOvalButton("PlayerEsp", "玩家透视", 10)
+buttons.npcEsp = createOvalButton("NpcEsp", "NPC透视", 140)
+buttons.aimbot = createOvalButton("Aimbot", "平滑自瞄", 270)
+buttons.highlight = createOvalButton("Highlight", "高亮", 400)
+
+local connections = {}
+local firstAimClick = true
+local PlayerHighlights = {}
+local NPCHighlights = {}
+local aimbotEnabled = false
+local highlightEnabled = false
+
+CloseButton.MouseButton1Click:Connect(function()
+    for _, conn in pairs(connections) do if conn then conn:Disconnect() end end
+    for _, data in pairs(PlayerHighlights) do if data.Highlight then data.Highlight:Destroy() end if data.Billboard then data.Billboard:Destroy() end end
+    for _, data in pairs(NPCHighlights) do if data.Highlight then data.Highlight:Destroy() end if data.Billboard then data.Billboard:Destroy() end end
+    Lighting.Brightness = originalBrightness
+    Lighting.Ambient = originalAmbient
+    Lighting.ColorShift_Top = originalColorShift_Top
+    Lighting.ColorShift_Bottom = originalColorShift_Bottom
+    ScreenGui:Destroy()
+end)
+
+local minimized = false
+MinimizeButton.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    MainContainer.Visible = not minimized
+    MiniContainer.Visible = minimized
+    MinimizeButton.Text = minimized and "+" or "-"
+end)
+
+MiniContainer.MouseButton1Click:Connect(function()
+    minimized = false
+    MainContainer.Visible = true
+    MiniContainer.Visible = false
+    MinimizeButton.Text = "-"
+end)
+
+buttons.playerEsp.MouseButton1Click:Connect(function()
+    if not connections.playerEsp then
+        connections.playerEsp = RunService.RenderStepped:Connect(function()
+            for _, plr in pairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") and plr.Character:FindFirstChild("Head") then
+                    if not PlayerHighlights[plr] then
+                        local highlight = Instance.new("Highlight")
+                        highlight.Adornee = plr.Character
+                        highlight.FillColor = Color3.fromRGB(0, 255, 0)
+                        highlight.FillTransparency = 0.8
+                        highlight.OutlineColor = Color3.fromRGB(50, 255, 50)
+                        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        highlight.Parent = plr.Character
+                        local billboard = Instance.new("BillboardGui")
+                        billboard.Size = UDim2.new(0, 120, 0, 40)
+                        billboard.Adornee = plr.Character.Head
+                        billboard.AlwaysOnTop = true
+                        billboard.StudsOffset = Vector3.new(0, 2, 0)
+                        billboard.Parent = plr.Character.Head
+                        local nameLabel = Instance.new("TextLabel")
+                        nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        nameLabel.BackgroundTransparency = 1
+                        nameLabel.TextColor3 = Color3.fromRGB(200, 255, 200)
+                        nameLabel.TextStrokeTransparency = 0
+                        nameLabel.Text = plr.Name
+                        nameLabel.Parent = billboard
+                        local healthLabel = Instance.new("TextLabel")
+                        healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
+                        healthLabel.BackgroundTransparency = 1
+                        healthLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+                        healthLabel.TextStrokeTransparency = 0
+                        healthLabel.Text = "HP: " .. math.floor(plr.Character.Humanoid.Health)
+                        healthLabel.Parent = billboard
+                        PlayerHighlights[plr] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel, Humanoid = plr.Character.Humanoid}
+                    else
+                        PlayerHighlights[plr].HealthLabel.Text = "HP: " .. math.floor(PlayerHighlights[plr].Humanoid.Health)
+                    end
+                end
+            end
+        end)
+        buttons.playerEsp.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+        buttons.playerEsp.Text = "玩家透视 [ON]"
+    else
+        connections.playerEsp:Disconnect()
+        connections.playerEsp = nil
+        for _, data in pairs(PlayerHighlights) do if data.Highlight then data.Highlight:Destroy() end if data.Billboard then data.Billboard:Destroy() end end
+        PlayerHighlights = {}
+        buttons.playerEsp.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        buttons.playerEsp.Text = "玩家透视 [OFF]"
+    end
+end)
+
+buttons.npcEsp.MouseButton1Click:Connect(function()
+    if not connections.npcEsp then
+        connections.npcEsp = RunService.RenderStepped:Connect(function()
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("Head") and not Players:GetPlayerFromCharacter(obj) then
+                    if not NPCHighlights[obj] then
+                        local highlight = Instance.new("Highlight")
+                        highlight.Adornee = obj
+                        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+                        highlight.FillTransparency = 0.8
+                        highlight.OutlineColor = Color3.fromRGB(255, 50, 50)
+                        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        highlight.Parent = obj
+                        local billboard = Instance.new("BillboardGui")
+                        billboard.Size = UDim2.new(0, 120, 0, 40)
+                        billboard.Adornee = obj.Head
+                        billboard.AlwaysOnTop = true
+                        billboard.StudsOffset = Vector3.new(0, 2, 0)
+                        billboard.Parent = obj.Head
+                        local nameLabel = Instance.new("TextLabel")
+                        nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        nameLabel.BackgroundTransparency = 1
+                        nameLabel.TextColor3 = Color3.fromRGB(255, 200, 200)
+                        nameLabel.TextStrokeTransparency = 0
+                        nameLabel.Text = obj.Name
+                        nameLabel.Parent = billboard
+                        local healthLabel = Instance.new("TextLabel")
+                        healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
+                        healthLabel.BackgroundTransparency = 1
+                        healthLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+                        healthLabel.TextStrokeTransparency = 0
+                        healthLabel.Text = "HP: " .. math.floor(obj.Humanoid.Health)
+                        healthLabel.Parent = billboard
+                        NPCHighlights[obj] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel, Humanoid = obj.Humanoid}
+                    else
+                        NPCHighlights[obj].HealthLabel.Text = "HP: " .. math.floor(NPCHighlights[obj].Humanoid.Health)
+                    end
+                end
+            end
+        end)
+        buttons.npcEsp.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+        buttons.npcEsp.Text = "NPC透视 [ON]"
+    else
+        connections.npcEsp:Disconnect()
+        connections.npcEsp = nil
+        for _, data in pairs(NPCHighlights) do if data.Highlight then data.Highlight:Destroy() end if data.Billboard then data.Billboard:Destroy() end end
+        NPCHighlights = {}
+        buttons.npcEsp.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        buttons.npcEsp.Text = "NPC透视 [OFF]"
+    end
+end)
+
+buttons.aimbot.MouseButton1Click:Connect(function()
+    aimbotEnabled = not aimbotEnabled
+    if aimbotEnabled then
+        buttons.aimbot.BackgroundColor3 = Color3.fromRGB(0, 0, 150)
+        buttons.aimbot.Text = "平滑自瞄 [ON]"
+        if firstAimClick then
+            firstAimClick = false
+            local tip = Instance.new("Frame")
+            tip.Size = UDim2.new(0, 280, 0, 70)
+            tip.Position = UDim2.new(0.5, -140, 0.8, 0)
+            tip.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            tip.BackgroundTransparency = 0.3
+            tip.Parent = ScreenGui
+            local tipCorner = Instance.new("UICorner")
+            tipCorner.CornerRadius = UDim.new(0, 8)
+            tipCorner.Parent = tip
+            local tipLabel = Instance.new("TextLabel")
+            tipLabel.Size = UDim2.new(1, 0, 1, 0)
+            tipLabel.BackgroundTransparency = 1
+            tipLabel.Text = "平滑自瞄已启用\n包含玩家与NPC（带预判）"
+            tipLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            tipLabel.Font = Enum.Font.Gotham
+            tipLabel.TextSize = 16
+            tipLabel.TextWrapped = true
+            tipLabel.Parent = tip
+            task.delay(3, function() tip:Destroy() end)
+        end
+        if not connections.aimbot then
+            local AIM_SMOOTHNESS = 0.12
+            local MAX_RANGE = 300
+            local FOV_ANGLE = 60
+            local PREDICTION_TIME = 0.15
+            local Camera = workspace.CurrentCamera
+            local targetHistory = {}
+            local function GetCharacter()
+                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                    return LocalPlayer.Character
+                end
+                return nil
+            end
+            local function IsInFOV(targetPos)
+                local cameraPos = Camera.CFrame.Position
+                local direction = (targetPos - cameraPos).Unit
+                local cameraLook = Camera.CFrame.LookVector
+                local dotProduct = cameraLook:Dot(direction)
+                local angle = math.acos(dotProduct) * (180 / math.pi)
+                return angle <= FOV_ANGLE / 2
+            end
+            local function PredictPosition(target, currentPos)
+                local targetId = tostring(target:GetDebugId())
+                if not targetHistory[targetId] then
+                    targetHistory[targetId] = {lastPos = currentPos, lastTime = tick(), velocity = Vector3.new(0, 0, 0)}
+                    return currentPos
+                end
+                local history = targetHistory[targetId]
+                local currentTime = tick()
+                local deltaTime = currentTime - history.lastTime
+                if deltaTime > 0 then
+                    local velocity = (currentPos - history.lastPos) / deltaTime
+                    history.velocity = history.velocity:Lerp(velocity, 0.3)
+                    local predictedPos = currentPos + (history.velocity * PREDICTION_TIME)
+                    history.lastPos = currentPos
+                    history.lastTime = currentTime
+                    return predictedPos
+                end
+                return currentPos
+            end
+            local function FindTarget()
+                local char = GetCharacter()
+                if not char then return nil end
+                local myPos = char.HumanoidRootPart.Position
+                local closest = nil
+                local shortestDist = MAX_RANGE
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        local targetPos = player.Character.HumanoidRootPart.Position
+                        local dist = (myPos - targetPos).Magnitude
+                        if dist < shortestDist and IsInFOV(targetPos) then
+                            shortestDist = dist
+                            closest = player.Character.HumanoidRootPart
+                        end
+                    end
+                end
+                for _, model in pairs(workspace:GetDescendants()) do
+                    if model:IsA("Model") and model:FindFirstChild("HumanoidRootPart") then
+                        local isPlayer = false
+                        for _, player in pairs(Players:GetPlayers()) do
+                            if player.Character == model then isPlayer = true break end
+                        end
+                        if not isPlayer then
+                            local targetPos = model.HumanoidRootPart.Position
+                            local dist = (myPos - targetPos).Magnitude
+                            if dist < shortestDist and IsInFOV(targetPos) then
+                                shortestDist = dist
+                                closest = model.HumanoidRootPart
+                            end
+                        end
+                    end
+                end
+                return closest
+            end
+            connections.aimbot = RunService.Heartbeat:Connect(function()
+                pcall(function()
+                    local target = FindTarget()
+                    if target then
+                        local currentPos = target.Position
+                        local predictedPos = PredictPosition(target, currentPos)
+                        local cameraPos = Camera.CFrame.Position
+                        local lookVector = (predictedPos - cameraPos).Unit
+                        local targetCFrame = CFrame.lookAt(cameraPos, cameraPos + lookVector)
+                        local randomOffset = Vector3.new((math.random()-0.5)*0.02, (math.random()-0.5)*0.02, 0)
+                        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame + randomOffset, AIM_SMOOTHNESS)
+                    end
+                end)
+            end)
+        end
+    else
+        buttons.aimbot.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        buttons.aimbot.Text = "平滑自瞄 [OFF]"
+        if connections.aimbot then connections.aimbot:Disconnect() connections.aimbot = nil end
+    end
+end)
+
+buttons.highlight.MouseButton1Click:Connect(function()
+    highlightEnabled = not highlightEnabled
+    if highlightEnabled then
+        buttons.highlight.BackgroundColor3 = Color3.fromRGB(150, 150, 0)
+        buttons.highlight.Text = "高亮 [ON]"
+        Lighting.Brightness = 5
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.ColorShift_Top = Color3.fromRGB(255, 255, 255)
+        Lighting.ColorShift_Bottom = Color3.fromRGB(255, 255, 255)
+    else
+        buttons.highlight.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        buttons.highlight.Text = "高亮 [OFF]"
+        Lighting.Brightness = originalBrightness
+        Lighting.Ambient = originalAmbient
+        Lighting.ColorShift_Top = originalColorShift_Top
+        Lighting.ColorShift_Bottom = originalColorShift_Bottom
+    end
+end)
