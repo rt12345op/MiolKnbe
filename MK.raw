@@ -5,6 +5,7 @@ WindUI:SetTheme("Dark")
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
@@ -23,18 +24,35 @@ local originalLighting = {
 local connections = {}
 local PlayerHighlights = {}
 local NPCHighlights = {}
-local centerCircle = nil
+local fovCircle = nil
+local smallWindowButton = nil
+local smallWindowAimbotUI = nil
+local bulletTrackingEnabled = false
 local aimbotEnabled = false
+local smallWindowAimbotEnabled = false
 local highlightEnabled = false
 local fogRemoved = false
-local autoFrameEnabled = false
+local fovEnabled = false
+local espEnabled = false
+local espTextEnabled = true
+local rayEnabled = false
 
 local PlayerESPRange = 20
 local NPCESPRange = 20
 local AIM_MAX_RANGE = 300
-local AIM_SMOOTHNESS = 0.15
-local PREDICTION_TIME = 0.12
-local autoFrameRadius = 10
+local AIM_SMOOTHNESS = 0.08
+local PREDICTION_TIME = 0.15
+local fovRadius = 10
+local ViewFOV = 70
+
+-- 子弹追踪配置
+local bulletTracking = {
+    enable = false,
+    teamcheck = false,
+    friendcheck = false,
+    enablenpc = false,
+    hooked = false
+}
 
 local Window = WindUI:CreateWindow({
     Title = "三角洲项目xk",
@@ -43,28 +61,603 @@ local Window = WindUI:CreateWindow({
     Folder = "DeltaProjectXK",
     Size = UDim2.fromOffset(800, 600),
     Theme = "Dark",
-    User = {Enabled = true, Callback = function() end},
+    User = {
+        Enabled = true,
+        Callback = function()
+        end
+    },
     SideBarWidth = 220,
     ScrollBarEnabled = true
 })
 
-Window:Tag({Title = "v1.0", Color = Color3.fromHex("#306aff")})
+Window:Tag({
+    Title = "V1",
+    Color = Color3.fromHex("#306aff")
+})
 
-local AnnouncementTab = Window:Tab({Title = "公告", Icon = "app-window", Locked = false})
+local AnnouncementTab = Window:Tab({
+    Title = "公告",
+    Icon = "app-window",
+    Locked = false,
+})
+
 AnnouncementTab:Paragraph({
-    Title = "三角洲项目xk v1.0",
+    Title = "-私人脚本 三角洲项目-",
     Image = "nil",
     ImageSize = 20,
     Color = "Grey",
-    Buttons = {{
-        Title = "复制项目地址",
-        Icon = "copy",
-        Variant = "Tertiary",
-        Callback = function() setclipboard("https://github.com/DeltaProjectXK") end
-    }}
+    Buttons = {
+        {
+            Title = "复制项目地址",
+            Icon = "copy",
+            Variant = "Tertiary",
+            Callback = function()
+                setclipboard("https://github.com/DeltaProjectXK")
+            end
+        }
+    }
 })
 
-local EspTab = Window:Tab({Title = "透视功能", Icon = "eye", Locked = false})
+-- 战斗标签页
+local CombatTab = Window:Tab({
+    Title = "战斗",
+    Icon = "crosshair",
+    Locked = false,
+})
+
+-- 子弹追踪功能
+local function getClosestHead()
+    local closestHead
+    local closestDistance = math.huge
+    
+    if not LocalPlayer.Character then return end
+    if not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local skip = false
+            
+            if bulletTracking.teamcheck then
+                if player.Team == LocalPlayer.Team then
+                    skip = true
+                end
+            end
+            
+            if not skip and bulletTracking.friendcheck then
+                if LocalPlayer:IsFriendsWith(player.UserId) then
+                    skip = true
+                end
+            end
+            
+            if not skip then
+                local character = player.Character
+                local root = character:FindFirstChild("HumanoidRootPart")
+                local head = character:FindFirstChild("Head")
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                local forcefield = character:FindFirstChild("ForceField")
+                
+                if root and head and humanoid and not forcefield and humanoid.Health > 0 then
+                    local distance = (root.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
+                    if distance < closestDistance then
+                        closestHead = head
+                        closestDistance = distance
+                    end
+                end
+            end
+        end
+    end
+    return closestHead
+end
+
+local function getClosestNpcHead()
+    local closestNPC = nil
+    local closestDistance = math.huge
+    local Hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not Hrp then return nil end
+    
+    -- 优化：缓存NPC列表，避免每帧遍历整个Workspace
+    if not bulletTracking.npcCache then
+        bulletTracking.npcCache = {}
+        bulletTracking.lastNpcScan = 0
+    end
+    
+    -- 每0.5秒重新扫描NPC
+    if tick() - bulletTracking.lastNpcScan > 0.5 then
+        bulletTracking.npcCache = {}
+        for _, object in ipairs(Workspace:GetDescendants()) do
+            if object:IsA("Model") then
+                local humanoid = object:FindFirstChild("Humanoid") or object:FindFirstChildWhichIsA("Humanoid")
+                local hrp = object:FindFirstChild("HumanoidRootPart") or object.PrimaryPart
+                if humanoid and hrp and humanoid.Health > 0 then
+                    local isPlayer = false
+                    for _, pl in ipairs(Players:GetPlayers()) do
+                        if pl.Character == object then
+                            isPlayer = true
+                            break
+                        end
+                    end
+                    if not isPlayer then
+                        table.insert(bulletTracking.npcCache, object)
+                    end
+                end
+            end
+        end
+        bulletTracking.lastNpcScan = tick()
+    end
+    
+    for _, object in ipairs(bulletTracking.npcCache) do
+        local hrp = object:FindFirstChild("HumanoidRootPart") or object.PrimaryPart
+        local head = object:FindFirstChild("Head")
+        if hrp and head then
+            local distance = (hrp.Position - Hrp.Position).Magnitude
+            if distance < closestDistance then
+                closestDistance = distance
+                closestNPC = head
+            end
+        end
+    end
+    return closestNPC
+end
+
+local old
+local function setupBulletTracking()
+    if bulletTracking.hooked then return end
+    bulletTracking.hooked = true
+    
+    old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        if bulletTracking.enable and method == "Raycast" and not checkcaller() then
+            local origin = args[1] or Camera.CFrame.Position
+            local closestHead = getClosestHead()
+            if closestHead then
+                return {
+                    Instance = closestHead,
+                    Position = closestHead.Position,
+                    Normal = (origin - closestHead.Position).Unit,
+                    Material = Enum.Material.Plastic,
+                    Distance = (closestHead.Position - origin).Magnitude
+                }
+            end
+        elseif bulletTracking.enablenpc and method == "Raycast" and not checkcaller() then
+            local origin = args[1] or Camera.CFrame.Position
+            local closestnpcHead = getClosestNpcHead()
+            if closestnpcHead then
+                return {
+                    Instance = closestnpcHead,
+                    Position = closestnpcHead.Position,
+                    Normal = (origin - closestnpcHead.Position).Unit,
+                    Material = Enum.Material.Plastic,
+                    Distance = (closestnpcHead.Position - origin).Magnitude
+                }
+            end
+        end
+        return old(self, ...)
+    end))
+end
+
+-- 子弹追踪区域
+CombatTab:Section({ Title = "子弹追踪", Text = "自动追踪敌人头部" })
+
+CombatTab:Toggle({
+    Title = "启用子弹追踪",
+    Desc = "自动追踪敌人头部",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        bulletTracking.enable = state
+        if state then
+            setupBulletTracking()
+        end
+    end
+})
+
+CombatTab:Toggle({
+    Title = "队伍验证",
+    Desc = "不追踪队友",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        bulletTracking.teamcheck = state
+    end
+})
+
+CombatTab:Toggle({
+    Title = "好友验证",
+    Desc = "不追踪好友",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        bulletTracking.friendcheck = state
+    end
+})
+
+CombatTab:Toggle({
+    Title = "NPC追踪",
+    Desc = "追踪NPC",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        bulletTracking.enablenpc = state
+        if state then
+            setupBulletTracking()
+        end
+    end
+})
+
+-- 自瞄区域
+CombatTab:Section({ Title = "自瞄功能", Text = "自动瞄准敌人" })
+
+-- FOV框开关和滑块
+CombatTab:Toggle({
+    Title = "FOV框",
+    Desc = "显示自瞄范围",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        fovEnabled = state
+        if state then
+            createFovCircle(fovRadius)
+        else
+            if fovCircle then
+                fovCircle:Destroy()
+                fovCircle = nil
+            end
+        end
+    end
+})
+
+CombatTab:Slider({
+    Title = "FOV框大小",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 100,
+        Default = 10,
+    },
+    Callback = function(value)
+        fovRadius = value
+        if fovEnabled then
+            createFovCircle(fovRadius)
+        end
+    end
+})
+
+-- 平滑自瞄
+CombatTab:Toggle({
+    Title = "平滑自瞄",
+    Desc = "自动瞄准敌人",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        aimbotEnabled = state
+        if state then
+            if smallWindowAimbotEnabled then
+                smallWindowAimbotEnabled = false
+                if smallWindowAimbotUI then
+                    smallWindowAimbotUI:Destroy()
+                    smallWindowAimbotUI = nil
+                end
+            end
+            if not connections.aimbot then
+                local targetHistory = {}
+                local function FindTarget()
+                    local char = LocalPlayer.Character
+                    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+                    local myRoot = char.HumanoidRootPart
+                    local myPos = myRoot.Position
+                    local closestTarget = nil
+                    local shortestDist = AIM_MAX_RANGE
+                    local bestPriority = math.huge
+                    for _, player in pairs(Players:GetPlayers()) do
+                        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                            local targetRoot = player.Character.HumanoidRootPart
+                            local targetHumanoid = player.Character:FindFirstChild("Humanoid")
+                            local targetPos = targetRoot.Position
+                            local dist = (myPos - targetPos).Magnitude
+                            if dist < shortestDist then
+                                local priority = 0
+                                if targetHumanoid then
+                                    priority = targetHumanoid.Health / targetHumanoid.MaxHealth
+                                end
+                                if priority < bestPriority then
+                                    bestPriority = priority
+                                    shortestDist = dist
+                                    closestTarget = targetRoot
+                                end
+                            end
+                        end
+                    end
+                    for _, obj in pairs(Workspace:GetDescendants()) do
+                        if obj:IsA("Model") and obj:FindFirstChild("HumanoidRootPart") and not Players:GetPlayerFromCharacter(obj) then
+                            local targetRoot = obj.HumanoidRootPart
+                            local targetHumanoid = obj:FindFirstChild("Humanoid")
+                            local targetPos = targetRoot.Position
+                            local dist = (myPos - targetPos).Magnitude
+                            if dist < shortestDist then
+                                local priority = 0
+                                if targetHumanoid then
+                                    priority = targetHumanoid.Health / targetHumanoid.MaxHealth
+                                end
+                                if priority < bestPriority then
+                                    bestPriority = priority
+                                    shortestDist = dist
+                                    closestTarget = targetRoot
+                                end
+                            end
+                        end
+                    end
+                    return closestTarget
+                end
+                local function PredictPosition(target, currentPos)
+                    local targetId = tostring(target:GetDebugId())
+                    if not targetHistory[targetId] then
+                        targetHistory[targetId] = {lastPos = currentPos, lastTime = tick(), velocity = Vector3.new(0, 0, 0)}
+                        return currentPos
+                    end
+                    local history = targetHistory[targetId]
+                    local currentTime = tick()
+                    local deltaTime = currentTime - history.lastTime
+                    if deltaTime > 0 then
+                        local velocity = (currentPos - history.lastPos) / deltaTime
+                        history.velocity = history.velocity:Lerp(velocity, 0.3)
+                        local predictedPos = currentPos + (history.velocity * PREDICTION_TIME)
+                        history.lastPos = currentPos
+                        history.lastTime = currentTime
+                        return predictedPos
+                    end
+                    return currentPos
+                end
+                connections.aimbot = RunService.RenderStepped:Connect(function()
+                    if not aimbotEnabled then return end
+                    local target = FindTarget()
+                    if not target then return end
+                    local currentPos = target.Position
+                    local predictedPos = PredictPosition(target, currentPos)
+                    local cameraPos = Camera.CFrame.Position
+                    local direction = (predictedPos - cameraPos).Unit
+                    local targetCFrame = CFrame.lookAt(cameraPos, cameraPos + direction)
+                    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, AIM_SMOOTHNESS)
+                end)
+            end
+        else
+            if connections.aimbot then
+                connections.aimbot:Disconnect()
+                connections.aimbot = nil
+            end
+        end
+    end
+})
+
+CombatTab:Slider({
+    Title = "自瞄范围",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 1000,
+        Default = 300,
+    },
+    Callback = function(value)
+        AIM_MAX_RANGE = value
+    end
+})
+
+CombatTab:Slider({
+    Title = "自瞄平滑度",
+    Step = 0.01,
+    Value = {
+        Min = 0.01,
+        Max = 0.5,
+        Default = 0.08,
+    },
+    Callback = function(value)
+        AIM_SMOOTHNESS = value
+    end
+})
+
+-- 小窗自瞄
+local function createSmallWindowAimbotUI()
+    if smallWindowAimbotUI then
+        smallWindowAimbotUI:Destroy()
+        smallWindowAimbotUI = nil
+    end
+    
+    smallWindowAimbotUI = Instance.new("ScreenGui")
+    smallWindowAimbotUI.Name = "SmallWindowAimbotUI"
+    smallWindowAimbotUI.Parent = game.CoreGui
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 180, 0, 120)
+    mainFrame.Position = UDim2.new(0.8, 0, 0.2, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = smallWindowAimbotUI
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = mainFrame
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 25)
+    title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    title.Text = "独立自瞄开关"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 14
+    title.Font = Enum.Font.SourceSansBold
+    title.Parent = mainFrame
+    
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Size = UDim2.new(0, 140, 0, 30)
+    toggleButton.Position = UDim2.new(0.5, -70, 0, 35)
+    toggleButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    toggleButton.Text = "自瞄: OFF"
+    toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleButton.TextSize = 14
+    toggleButton.Font = Enum.Font.SourceSansBold
+    toggleButton.Parent = mainFrame
+    
+    local buttonCorner = Instance.new("UICorner")
+    buttonCorner.CornerRadius = UDim.new(0, 6)
+    buttonCorner.Parent = toggleButton
+    
+    local warningLabel = Instance.new("TextLabel")
+    warningLabel.Size = UDim2.new(1, 0, 0, 20)
+    warningLabel.Position = UDim2.new(0, 0, 0, 70)
+    warningLabel.BackgroundTransparency = 1
+    warningLabel.Text = "不要与主UI自瞄同时开启"
+    warningLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+    warningLabel.TextSize = 10
+    warningLabel.Font = Enum.Font.SourceSans
+    warningLabel.Parent = mainFrame
+    
+    -- 平滑度输入框
+    local smoothnessBox = Instance.new("TextBox")
+    smoothnessBox.Size = UDim2.new(0, 60, 0, 20)
+    smoothnessBox.Position = UDim2.new(0.5, -30, 0, 95)
+    smoothnessBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    smoothnessBox.Text = "0.08"
+    smoothnessBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    smoothnessBox.TextSize = 12
+    smoothnessBox.Font = Enum.Font.SourceSans
+    smoothnessBox.PlaceholderText = "平滑度"
+    smoothnessBox.ClearTextOnFocus = false
+    smoothnessBox.Parent = mainFrame
+    
+    local smoothnessCorner = Instance.new("UICorner")
+    smoothnessCorner.CornerRadius = UDim.new(0, 4)
+    smoothnessCorner.Parent = smoothnessBox
+    
+    -- 平滑度标签
+    local smoothnessLabel = Instance.new("TextLabel")
+    smoothnessLabel.Size = UDim2.new(0, 60, 0, 20)
+    smoothnessLabel.Position = UDim2.new(0.5, -100, 0, 95)
+    smoothnessLabel.BackgroundTransparency = 1
+    smoothnessLabel.Text = "平滑度:"
+    smoothnessLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    smoothnessLabel.TextSize = 12
+    smoothnessLabel.Font = Enum.Font.SourceSans
+    smoothnessLabel.Parent = mainFrame
+    
+    toggleButton.MouseButton1Click:Connect(function()
+        smallWindowAimbotEnabled = not smallWindowAimbotEnabled
+        toggleButton.Text = smallWindowAimbotEnabled and "自瞄: ON" or "自瞄: OFF"
+        toggleButton.BackgroundColor3 = smallWindowAimbotEnabled and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(60, 60, 60)
+        
+        if smallWindowAimbotEnabled then
+            if aimbotEnabled then
+                aimbotEnabled = false
+                if connections.aimbot then
+                    connections.aimbot:Disconnect()
+                    connections.aimbot = nil
+                end
+            end
+            -- 启动小窗自瞄逻辑
+            if not connections.smallAimbot then
+                local targetHistory = {}
+                local function FindTarget()
+                    local char = LocalPlayer.Character
+                    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+                    local myRoot = char.HumanoidRootPart
+                    local myPos = myRoot.Position
+                    local closestTarget = nil
+                    local shortestDist = AIM_MAX_RANGE
+                    for _, player in pairs(Players:GetPlayers()) do
+                        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                            local targetRoot = player.Character.HumanoidRootPart
+                            local dist = (myPos - targetRoot.Position).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                closestTarget = targetRoot
+                            end
+                        end
+                    end
+                    return closestTarget
+                end
+                connections.smallAimbot = RunService.RenderStepped:Connect(function()
+                    if not smallWindowAimbotEnabled then return end
+                    local target = FindTarget()
+                    if not target then return end
+                    local cameraPos = Camera.CFrame.Position
+                    local direction = (target.Position - cameraPos).Unit
+                    local targetCFrame = CFrame.lookAt(cameraPos, cameraPos + direction)
+                    
+                    -- 使用输入框中的平滑度值
+                    local smoothness = tonumber(smoothnessBox.Text) or 0.08
+                    smoothness = math.clamp(smoothness, 0.01, 0.8)
+                    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, smoothness)
+                end)
+            end
+        else
+            if connections.smallAimbot then
+                connections.smallAimbot:Disconnect()
+                connections.smallAimbot = nil
+            end
+        end
+    end)
+    
+    -- 平滑度输入验证
+    smoothnessBox.FocusLost:Connect(function()
+        local value = tonumber(smoothnessBox.Text)
+        if value then
+            value = math.clamp(value, 0.01, 0.8)
+            smoothnessBox.Text = string.format("%.2f", value)
+        else
+            smoothnessBox.Text = "0.08"
+        end
+    end)
+    
+    -- 关闭按钮
+    local closeButton = Instance.new("TextButton")
+    closeButton.Size = UDim2.new(0, 20, 0, 20)
+    closeButton.Position = UDim2.new(1, -25, 0, 2)
+    closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    closeButton.Text = "X"
+    closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeButton.TextSize = 12
+    closeButton.Font = Enum.Font.SourceSansBold
+    closeButton.Parent = mainFrame
+    
+    closeButton.MouseButton1Click:Connect(function()
+        smallWindowAimbotUI:Destroy()
+        smallWindowAimbotUI = nil
+        smallWindowAimbotEnabled = false
+        if connections.smallAimbot then
+            connections.smallAimbot:Disconnect()
+            connections.smallAimbot = nil
+        end
+    end)
+end
+
+CombatTab:Toggle({
+    Title = "独立自瞄开关",
+    Desc = "创建独立UI自瞄按钮",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        if state then
+            createSmallWindowAimbotUI()
+        else
+            if smallWindowAimbotUI then
+                smallWindowAimbotUI:Destroy()
+                smallWindowAimbotUI = nil
+            end
+            if connections.smallAimbot then
+                connections.smallAimbot:Disconnect()
+                connections.smallAimbot = nil
+            end
+            smallWindowAimbotEnabled = false
+        end
+    end
+})
+
+local EspTab = Window:Tab({
+    Title = "透视功能",
+    Icon = "eye",
+    Locked = false,
+})
+
+-- ESP区域
+EspTab:Section({ Title = "玩家透视", Text = "显示所有玩家的位置和血量" })
 
 local PlayerEspToggle = EspTab:Toggle({
     Title = "玩家透视",
@@ -72,18 +665,17 @@ local PlayerEspToggle = EspTab:Toggle({
     Type = "Checkbox",
     Default = false,
     Callback = function(state)
+        espEnabled = state
         if state then
             if not connections.playerEsp then
                 connections.playerEsp = RunService.RenderStepped:Connect(function()
                     local localCharacter = LocalPlayer.Character
                     if not localCharacter or not localCharacter:FindFirstChild("HumanoidRootPart") then return end
                     local localPosition = localCharacter.HumanoidRootPart.Position
-                    
                     for _, plr in pairs(Players:GetPlayers()) do
                         if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") and plr.Character:FindFirstChild("Head") then
                             local targetPosition = plr.Character.HumanoidRootPart.Position
                             local distance = (targetPosition - localPosition).Magnitude
-                            
                             if distance <= PlayerESPRange then
                                 if not PlayerHighlights[plr] then
                                     local highlight = Instance.new("Highlight")
@@ -93,16 +685,15 @@ local PlayerEspToggle = EspTab:Toggle({
                                     highlight.OutlineColor = Color3.fromRGB(50, 255, 50)
                                     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                                     highlight.Parent = plr.Character
-                                    
                                     local billboard = Instance.new("BillboardGui")
-                                    billboard.Size = UDim2.new(0, 120, 0, 40)
+                                    billboard.Size = UDim2.new(0, 120, 0, 60)
                                     billboard.Adornee = plr.Character.Head
                                     billboard.AlwaysOnTop = true
                                     billboard.StudsOffset = Vector3.new(0, 2, 0)
                                     billboard.Parent = plr.Character.Head
                                     
                                     local nameLabel = Instance.new("TextLabel")
-                                    nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                                    nameLabel.Size = UDim2.new(1, 0, 0.33, 0)
                                     nameLabel.BackgroundTransparency = 1
                                     nameLabel.TextColor3 = Color3.fromRGB(200, 255, 200)
                                     nameLabel.TextStrokeTransparency = 0
@@ -110,17 +701,29 @@ local PlayerEspToggle = EspTab:Toggle({
                                     nameLabel.Parent = billboard
                                     
                                     local healthLabel = Instance.new("TextLabel")
-                                    healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
-                                    healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
+                                    healthLabel.Size = UDim2.new(1, 0, 0.33, 0)
+                                    healthLabel.Position = UDim2.new(0, 0, 0.33, 0)
                                     healthLabel.BackgroundTransparency = 1
                                     healthLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
                                     healthLabel.TextStrokeTransparency = 0
                                     healthLabel.Text = "HP: " .. math.floor(plr.Character.Humanoid.Health)
                                     healthLabel.Parent = billboard
                                     
-                                    PlayerHighlights[plr] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel}
+                                    local distanceLabel = Instance.new("TextLabel")
+                                    distanceLabel.Size = UDim2.new(1, 0, 0.33, 0)
+                                    distanceLabel.Position = UDim2.new(0, 0, 0.66, 0)
+                                    distanceLabel.BackgroundTransparency = 1
+                                    distanceLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
+                                    distanceLabel.TextStrokeTransparency = 0
+                                    distanceLabel.Text = "距离: " .. math.floor(distance) .. "m"
+                                    distanceLabel.Parent = billboard
+                                    
+                                    PlayerHighlights[plr] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel, DistanceLabel = distanceLabel, Humanoid = plr.Character.Humanoid}
                                 else
-                                    PlayerHighlights[plr].HealthLabel.Text = "HP: " .. math.floor(plr.Character.Humanoid.Health)
+                                    if PlayerHighlights[plr].Humanoid then
+                                        PlayerHighlights[plr].HealthLabel.Text = "HP: " .. math.floor(PlayerHighlights[plr].Humanoid.Health)
+                                        PlayerHighlights[plr].DistanceLabel.Text = "距离: " .. math.floor((plr.Character.HumanoidRootPart.Position - localPosition).Magnitude) .. "m"
+                                    end
                                 end
                             else
                                 if PlayerHighlights[plr] then
@@ -147,11 +750,78 @@ local PlayerEspToggle = EspTab:Toggle({
     end
 })
 
-local PlayerEspRangeSlider = EspTab:Slider({
+EspTab:Slider({
     Title = "玩家透视范围",
     Step = 1,
-    Value = {Min = 0, Max = 1000, Default = 20},
-    Callback = function(value) PlayerESPRange = value end
+    Value = {
+        Min = 0,
+        Max = 1000,
+        Default = 20,
+    },
+    Callback = function(value)
+        PlayerESPRange = value
+    end
+})
+
+EspTab:Toggle({
+    Title = "文本显示",
+    Desc = "关闭则只显示骨骼",
+    Type = "Checkbox",
+    Default = true,
+    Callback = function(state)
+        espTextEnabled = state
+        -- 更新所有现有ESP的文本显示状态
+        for _, data in pairs(PlayerHighlights) do
+            if data.Billboard then
+                data.Billboard.Enabled = state
+            end
+        end
+        for _, data in pairs(NPCHighlights) do
+            if data.Billboard then
+                data.Billboard.Enabled = state
+            end
+        end
+    end
+})
+
+EspTab:Toggle({
+    Title = "射线追踪",
+    Desc = "从屏幕上方射到玩家头顶",
+    Type = "Checkbox",
+    Default = false,
+    Callback = function(state)
+        rayEnabled = state
+        if state then
+            if not connections.ray then
+                connections.ray = RunService.RenderStepped:Connect(function()
+                    if not espEnabled then return end
+                    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, 0)
+                    for _, plr in pairs(Players:GetPlayers()) do
+                        if plr ~= LocalPlayer and plr.Character and plr.Character:FindFirstChild("Head") then
+                            local head = plr.Character.Head
+                            local headPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                            if onScreen then
+                                local ray = Drawing.new("Line")
+                                ray.From = screenCenter
+                                ray.To = Vector2.new(headPos.X, headPos.Y)
+                                ray.Color = Color3.fromRGB(255, 255, 255)
+                                ray.Thickness = 1
+                                ray.Transparency = 1
+                                ray.Visible = true
+                                task.wait(0.01)
+                                ray:Remove()
+                            end
+                        end
+                    end
+                end)
+            end
+        else
+            if connections.ray then
+                connections.ray:Disconnect()
+                connections.ray = nil
+            end
+        end
+    end
 })
 
 local NpcEspToggle = EspTab:Toggle({
@@ -166,12 +836,10 @@ local NpcEspToggle = EspTab:Toggle({
                     local localCharacter = LocalPlayer.Character
                     if not localCharacter or not localCharacter:FindFirstChild("HumanoidRootPart") then return end
                     local localPosition = localCharacter.HumanoidRootPart.Position
-                    
                     for _, obj in pairs(Workspace:GetDescendants()) do
                         if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("Head") and not Players:GetPlayerFromCharacter(obj) then
                             local targetPosition = obj.HumanoidRootPart.Position
                             local distance = (targetPosition - localPosition).Magnitude
-                            
                             if distance <= NPCESPRange then
                                 if not NPCHighlights[obj] then
                                     local highlight = Instance.new("Highlight")
@@ -181,16 +849,15 @@ local NpcEspToggle = EspTab:Toggle({
                                     highlight.OutlineColor = Color3.fromRGB(255, 50, 50)
                                     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                                     highlight.Parent = obj
-                                    
                                     local billboard = Instance.new("BillboardGui")
-                                    billboard.Size = UDim2.new(0, 120, 0, 40)
+                                    billboard.Size = UDim2.new(0, 120, 0, 60)
                                     billboard.Adornee = obj.Head
                                     billboard.AlwaysOnTop = true
                                     billboard.StudsOffset = Vector3.new(0, 2, 0)
                                     billboard.Parent = obj.Head
                                     
                                     local nameLabel = Instance.new("TextLabel")
-                                    nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                                    nameLabel.Size = UDim2.new(1, 0, 0.33, 0)
                                     nameLabel.BackgroundTransparency = 1
                                     nameLabel.TextColor3 = Color3.fromRGB(255, 200, 200)
                                     nameLabel.TextStrokeTransparency = 0
@@ -198,17 +865,29 @@ local NpcEspToggle = EspTab:Toggle({
                                     nameLabel.Parent = billboard
                                     
                                     local healthLabel = Instance.new("TextLabel")
-                                    healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
-                                    healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
+                                    healthLabel.Size = UDim2.new(1, 0, 0.33, 0)
+                                    healthLabel.Position = UDim2.new(0, 0, 0.33, 0)
                                     healthLabel.BackgroundTransparency = 1
                                     healthLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
                                     healthLabel.TextStrokeTransparency = 0
                                     healthLabel.Text = "HP: " .. math.floor(obj.Humanoid.Health)
                                     healthLabel.Parent = billboard
                                     
-                                    NPCHighlights[obj] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel}
+                                    local distanceLabel = Instance.new("TextLabel")
+                                    distanceLabel.Size = UDim2.new(1, 0, 0.33, 0)
+                                    distanceLabel.Position = UDim2.new(0, 0, 0.66, 0)
+                                    distanceLabel.BackgroundTransparency = 1
+                                    distanceLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
+                                    distanceLabel.TextStrokeTransparency = 0
+                                    distanceLabel.Text = "距离: " .. math.floor(distance) .. "m"
+                                    distanceLabel.Parent = billboard
+                                    
+                                    NPCHighlights[obj] = {Highlight = highlight, Billboard = billboard, HealthLabel = healthLabel, DistanceLabel = distanceLabel, Humanoid = obj.Humanoid}
                                 else
-                                    NPCHighlights[obj].HealthLabel.Text = "HP: " .. math.floor(obj.Humanoid.Health)
+                                    if NPCHighlights[obj].Humanoid then
+                                        NPCHighlights[obj].HealthLabel.Text = "HP: " .. math.floor(NPCHighlights[obj].Humanoid.Health)
+                                        NPCHighlights[obj].DistanceLabel.Text = "距离: " .. math.floor((obj.HumanoidRootPart.Position - localPosition).Magnitude) .. "m"
+                                    end
                                 end
                             else
                                 if NPCHighlights[obj] then
@@ -238,126 +917,21 @@ local NpcEspToggle = EspTab:Toggle({
 local NpcEspRangeSlider = EspTab:Slider({
     Title = "NPC透视范围",
     Step = 1,
-    Value = {Min = 0, Max = 1000, Default = 20},
-    Callback = function(value) NPCESPRange = value end
-})
-
-local AimbotTab = Window:Tab({Title = "自瞄功能", Icon = "crosshair", Locked = false})
-
-local AimbotToggle = AimbotTab:Toggle({
-    Title = "平滑自瞄",
-    Desc = "自动瞄准敌人，带预判功能",
-    Type = "Checkbox",
-    Default = false,
-    Callback = function(state)
-        aimbotEnabled = state
-        if state then
-            if not connections.aimbot then
-                local targetHistory = {}
-                local lastTarget = nil
-                
-                local function FindTarget()
-                    local char = LocalPlayer.Character
-                    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
-                    
-                    local myRoot = char.HumanoidRootPart
-                    local myPos = myRoot.Position
-                    local closestTarget = nil
-                    local shortestDist = AIM_MAX_RANGE
-                    
-                    -- 检查玩家
-                    for _, player in pairs(Players:GetPlayers()) do
-                        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
-                            local targetHead = player.Character.Head
-                            local dist = (myPos - targetHead.Position).Magnitude
-                            
-                            if dist < shortestDist then
-                                shortestDist = dist
-                                closestTarget = targetHead
-                            end
-                        end
-                    end
-                    
-                    -- 检查NPC
-                    for _, obj in pairs(Workspace:GetDescendants()) do
-                        if obj:IsA("Model") and obj:FindFirstChild("Head") and not Players:GetPlayerFromCharacter(obj) then
-                            local targetHead = obj.Head
-                            local dist = (myPos - targetHead.Position).Magnitude
-                            
-                            if dist < shortestDist then
-                                shortestDist = dist
-                                closestTarget = targetHead
-                            end
-                        end
-                    end
-                    
-                    return closestTarget
-                end
-                
-                local function PredictPosition(target, currentPos)
-                    local targetId = tostring(target:GetDebugId())
-                    if not targetHistory[targetId] then
-                        targetHistory[targetId] = {lastPos = currentPos, lastTime = tick(), velocity = Vector3.new(0, 0, 0)}
-                        return currentPos
-                    end
-                    
-                    local history = targetHistory[targetId]
-                    local currentTime = tick()
-                    local deltaTime = currentTime - history.lastTime
-                    
-                    if deltaTime > 0 then
-                        local velocity = (currentPos - history.lastPos) / deltaTime
-                        history.velocity = history.velocity:Lerp(velocity, 0.2)
-                        local predictedPos = currentPos + (history.velocity * PREDICTION_TIME)
-                        history.lastPos = currentPos
-                        history.lastTime = currentTime
-                        return predictedPos
-                    end
-                    return currentPos
-                end
-                
-                connections.aimbot = RunService.RenderStepped:Connect(function()
-                    if not aimbotEnabled then return end
-                    
-                    local target = FindTarget()
-                    if not target then return end
-                    
-                    local currentPos = target.Position
-                    local predictedPos = PredictPosition(target, currentPos)
-                    local cameraPos = Camera.CFrame.Position
-                    
-                    -- 计算目标方向
-                    local direction = (predictedPos - cameraPos).Unit
-                    local targetCFrame = CFrame.lookAt(cameraPos, cameraPos + direction)
-                    
-                    -- 平滑过渡
-                    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, AIM_SMOOTHNESS)
-                end)
-            end
-        else
-            if connections.aimbot then
-                connections.aimbot:Disconnect()
-                connections.aimbot = nil
-            end
-        end
+    Value = {
+        Min = 0,
+        Max = 1000,
+        Default = 20,
+    },
+    Callback = function(value)
+        NPCESPRange = value
     end
 })
 
-local AimbotRangeSlider = AimbotTab:Slider({
-    Title = "自瞄范围",
-    Step = 1,
-    Value = {Min = 1, Max = 1000, Default = 300},
-    Callback = function(value) AIM_MAX_RANGE = value end
+local VisualTab = Window:Tab({
+    Title = "视觉效果",
+    Icon = "sun",
+    Locked = false,
 })
-
-local AimbotSmoothnessSlider = AimbotTab:Slider({
-    Title = "自瞄平滑度",
-    Step = 0.01,
-    Value = {Min = 0.05, Max = 0.3, Default = 0.15},
-    Callback = function(value) AIM_SMOOTHNESS = value end
-})
-
-local VisualTab = Window:Tab({Title = "视觉效果", Icon = "sun", Locked = false})
 
 local HighlightToggle = VisualTab:Toggle({
     Title = "全局高亮",
@@ -365,6 +939,7 @@ local HighlightToggle = VisualTab:Toggle({
     Type = "Checkbox",
     Default = false,
     Callback = function(state)
+        highlightEnabled = state
         if state then
             Lighting.Brightness = 5
             Lighting.Ambient = Color3.fromRGB(255, 255, 255)
@@ -385,6 +960,7 @@ local RemoveFogToggle = VisualTab:Toggle({
     Type = "Checkbox",
     Default = false,
     Callback = function(state)
+        fogRemoved = state
         if state then
             Lighting.FogEnd = 100000
             Lighting.FogStart = 100000
@@ -397,86 +973,70 @@ local RemoveFogToggle = VisualTab:Toggle({
     end
 })
 
-local AutoFrameTab = Window:Tab({Title = "自描框", Icon = "circle", Locked = false})
-
-local function createCenterCircle(radius)
-    if centerCircle then
-        centerCircle:Destroy()
-        centerCircle = nil
-    end
-    
-    centerCircle = Instance.new("Frame")
-    centerCircle.Name = "CenterCircle"
-    centerCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
-    centerCircle.Position = UDim2.new(0.5, -radius, 0.5, -radius)
-    centerCircle.BackgroundTransparency = 1
-    centerCircle.BorderSizePixel = 0
-    centerCircle.Parent = Window.ScreenGui
-    
-    local circleBorder = Instance.new("UIStroke")
-    circleBorder.Color = Color3.fromRGB(255, 255, 255)
-    circleBorder.Thickness = 2
-    circleBorder.Parent = centerCircle
-    
-    local circleCorner = Instance.new("UICorner")
-    circleCorner.CornerRadius = UDim.new(1, 0)
-    circleCorner.Parent = centerCircle
-end
-
-local AutoFrameToggle = AutoFrameTab:Toggle({
-    Title = "自描框",
-    Desc = "在屏幕正中心显示圆环",
-    Type = "Checkbox",
-    Default = false,
-    Callback = function(state)
-        autoFrameEnabled = state
-        if state then
-            createCenterCircle(autoFrameRadius)
-        else
-            if centerCircle then
-                centerCircle:Destroy()
-                centerCircle = nil
-            end
-        end
-    end
-})
-
-local AutoFrameRadiusSlider = AutoFrameTab:Slider({
-    Title = "自描框半径",
+VisualTab:Slider({
+    Title = "视角FOV范围",
     Step = 1,
-    Value = {Min = 1, Max = 100, Default = 10},
+    Value = {
+        Min = 60,
+        Max = 120,
+        Default = 70,
+    },
     Callback = function(value)
-        autoFrameRadius = value
-        if autoFrameEnabled then
-            createCenterCircle(autoFrameRadius)
-        end
+        ViewFOV = value
+        Camera.FieldOfView = ViewFOV
     end
 })
 
-local SettingsTab = Window:Tab({Title = "设置", Icon = "settings", Locked = false})
+local SettingsTab = Window:Tab({
+    Title = "设置",
+    Icon = "settings",
+    Locked = false,
+})
 
 local ThemeDropdown = SettingsTab:Dropdown({
     Title = "主题选择",
-    Values = {"Dark", "Light", "Blue", "Green", "Red"},
+    Values = { "Dark", "Light", "Blue", "Green", "Red" },
     Value = "Dark",
-    Callback = function(option) WindUI:SetTheme(option) end
+    Callback = function(option)
+        WindUI:SetTheme(option)
+    end
 })
 
 local TransparencySlider = SettingsTab:Slider({
     Title = "UI透明度",
     Step = 0.05,
-    Value = {Min = 0, Max = 1, Default = 0.2},
-    Callback = function(value) WindUI.TransparencyValue = value end
+    Value = {
+        Min = 0,
+        Max = 1,
+        Default = 0.2,
+    },
+    Callback = function(value)
+        WindUI.TransparencyValue = value
+    end
 })
 
 local ResetButton = SettingsTab:Button({
     Title = "重置所有设置",
     Locked = false,
     Callback = function()
-        for _, conn in pairs(connections) do if conn then conn:Disconnect() end end
-        for _, data in pairs(PlayerHighlights) do if data.Highlight then data.Highlight:Destroy() end end
-        for _, data in pairs(NPCHighlights) do if data.Highlight then data.Highlight:Destroy() end end
+        -- 断开所有连接
+        for _, conn in pairs(connections) do 
+            if conn then 
+                conn:Disconnect() 
+            end 
+        end
         
+        -- 销毁所有ESP
+        for _, data in pairs(PlayerHighlights) do 
+            if data.Highlight then data.Highlight:Destroy() end 
+            if data.Billboard then data.Billboard:Destroy() end 
+        end
+        for _, data in pairs(NPCHighlights) do 
+            if data.Highlight then data.Highlight:Destroy() end 
+            if data.Billboard then data.Billboard:Destroy() end 
+        end
+        
+        -- 恢复光照设置
         Lighting.Brightness = originalLighting.Brightness
         Lighting.Ambient = originalLighting.Ambient
         Lighting.ColorShift_Top = originalLighting.ColorShift_Top
@@ -485,30 +1045,54 @@ local ResetButton = SettingsTab:Button({
         Lighting.FogStart = originalLighting.FogStart
         Lighting.GlobalShadows = originalLighting.GlobalShadows
         
-        if centerCircle then
-            centerCircle:Destroy()
-            centerCircle = nil
+        -- 销毁FOV框
+        if fovCircle then
+            fovCircle:Destroy()
+            fovCircle = nil
         end
         
+        -- 销毁小窗自瞄UI
+        if smallWindowAimbotUI then
+            smallWindowAimbotUI:Destroy()
+            smallWindowAimbotUI = nil
+        end
+        
+        -- 重置变量
         PlayerHighlights = {}
         NPCHighlights = {}
         connections = {}
+        bulletTrackingEnabled = false
+        bulletTracking.enable = false
+        bulletTracking.hooked = false
         aimbotEnabled = false
+        smallWindowAimbotEnabled = false
         highlightEnabled = false
         fogRemoved = false
-        autoFrameEnabled = false
+        fovEnabled = false
+        espEnabled = false
+        espTextEnabled = true
+        rayEnabled = false
         
-        PlayerEspToggle:Set(false)
-        NpcEspToggle:Set(false)
-        AimbotToggle:Set(false)
+        -- 重置UI状态
+        CombatTab:SetToggle("启用子弹追踪", false)
+        CombatTab:SetToggle("队伍验证", false)
+        CombatTab:SetToggle("好友验证", false)
+        CombatTab:SetToggle("NPC追踪", false)
+        CombatTab:SetToggle("FOV框", false)
+        CombatTab:SetToggle("平滑自瞄", false)
+        CombatTab:SetToggle("独立自瞄开关", false)
+        EspTab:SetToggle("玩家透视", false)
+        EspTab:SetToggle("文本显示", true)
+        EspTab:SetToggle("射线追踪", false)
+        EspTab:SetToggle("NPC透视", false)
         HighlightToggle:Set(false)
         RemoveFogToggle:Set(false)
-        AutoFrameToggle:Set(false)
         PlayerEspRangeSlider:Set(20)
         NpcEspRangeSlider:Set(20)
-        AimbotRangeSlider:Set(300)
-        AimbotSmoothnessSlider:Set(0.15)
-        AutoFrameRadiusSlider:Set(10)
+        CombatTab:SetSlider("自瞄范围", 300)
+        CombatTab:SetSlider("自瞄平滑度", 0.08)
+        CombatTab:SetSlider("FOV框大小", 10)
+        VisualTab:SetSlider("视角FOV范围", 70)
         ThemeDropdown:Set("Dark")
         TransparencySlider:Set(0.2)
     end
@@ -518,10 +1102,24 @@ local CloseButton = SettingsTab:Button({
     Title = "关闭脚本",
     Locked = false,
     Callback = function()
-        for _, conn in pairs(connections) do if conn then conn:Disconnect() end end
-        for _, data in pairs(PlayerHighlights) do if data.Highlight then data.Highlight:Destroy() end end
-        for _, data in pairs(NPCHighlights) do if data.Highlight then data.Highlight:Destroy() end end
+        -- 断开所有连接
+        for _, conn in pairs(connections) do 
+            if conn then 
+                conn:Disconnect() 
+            end 
+        end
         
+        -- 销毁所有ESP
+        for _, data in pairs(PlayerHighlights) do 
+            if data.Highlight then data.Highlight:Destroy() end 
+            if data.Billboard then data.Billboard:Destroy() end 
+        end
+        for _, data in pairs(NPCHighlights) do 
+            if data.Highlight then data.Highlight:Destroy() end 
+            if data.Billboard then data.Billboard:Destroy() end 
+        end
+        
+        -- 恢复光照设置
         Lighting.Brightness = originalLighting.Brightness
         Lighting.Ambient = originalLighting.Ambient
         Lighting.ColorShift_Top = originalLighting.ColorShift_Top
@@ -530,13 +1128,31 @@ local CloseButton = SettingsTab:Button({
         Lighting.FogStart = originalLighting.FogStart
         Lighting.GlobalShadows = originalLighting.GlobalShadows
         
-        if centerCircle then
-            centerCircle:Destroy()
-            centerCircle = nil
+        -- 销毁FOV框
+        if fovCircle then
+            fovCircle:Destroy()
+            fovCircle = nil
         end
         
+        -- 销毁小窗自瞄UI
+        if smallWindowAimbotUI then
+            smallWindowAimbotUI:Destroy()
+            smallWindowAimbotUI = nil
+        end
+        
+        -- 销毁主UI
         Window:Destroy()
+        
+        -- 清除所有全局引用
+        PlayerHighlights = nil
+        NPCHighlights = nil
+        connections = nil
+        bulletTracking = nil
+        smallWindowAimbotUI = nil
+        fovCircle = nil
+        
+        print("三角洲项目xk V1 已完全关闭")
     end
 })
 
-print("三角洲项目xk v1.0 已成功加载！所有功能已就绪。")
+print("三角洲项目xk V1 已成功加载！所有功能已就绪。")
