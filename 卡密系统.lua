@@ -477,7 +477,7 @@ WorkinkBtn.MouseButton1Click:Connect(function()
 end)
 
 DiscordLink.MouseButton1Click:Connect(function()
-    setclipboard("https://discord.gg/moechainfake123")
+    setclipboard("https://discord.gg/MOE-HUB")
     local originalText = DiscordLink.Text
     DiscordLink.Text = "Link Copied!"
     wait(1.5)
@@ -566,7 +566,7 @@ Learn more at https://moe-chain.xyz/]==]
                 return kickPlayer("Enter A Valid Key")
             end
             
-            if getfenv().ADittoKey ~= "time_based" then
+            if getfenv().ADittoKey ~= "0iga-vG1m-r0aH-yLrc-wfhh-Quon-eL" then
                 return kickPlayer("Invalid Key")
             end
             
