@@ -11,7 +11,7 @@ local USER_ID_MAP = {
     [10615465463] = "MOE_X0m1DgE41lzx",
     [4490894524] = "MOE_Z0Xom6DweA0p",
     [7731385535] = "MOE_B6etK0LpqyA0XN",
-    [7258604306] = "MOE_A6fgV4OryuG4SQ",
+    [7873534737] = "MOE_A6fgV4OryuG4SQ",
 }
 
 local function loadMainScript()
